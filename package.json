@@ -1,0 +1,15 @@
+{
+  "name": "neuroscience-database-frontend",
+  "version": "1.0.0",
+  "description": "Neuroscience Database Search Frontend",
+  "scripts": {
+    "start": "npx serve -s . -l 3000",
+    "dev": "npx serve -s . -l 3000"
+  },
+  "keywords": ["neuroscience", "database", "search"],
+  "author": "ntu-info",
+  "license": "MIT",
+  "dependencies": {
+    "serve": "^14.2.1"
+  }
+}
