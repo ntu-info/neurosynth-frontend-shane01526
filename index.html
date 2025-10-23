@@ -1,46 +1,479 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-Hant">
 <head>
-  <meta charset="UTF-8" />
-  <title>Fetch /terms Demo</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Neuroscience Database Search</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px);} to {opacity:1; transform: translateY(0);} }
+    .fade-in { animation: fadeIn 0.22s ease-out; }
+    .gradient-bg { background: linear-gradient(135deg,#667eea 0%,#764ba2 100%); }
+    .polished-table { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
+    .polished-table thead th { background: #f8fafc; }
+    .polished-table tbody tr:hover { background: rgba(102,126,234,0.06); }
+  </style>
 </head>
-<body>
-  <h1>Fetch https://mil.psy.ntu.edu.tw:5000/terms</h1>
-  <button id="btn">Fetch again</button>
-  <pre id="out">Loading…</pre>
+<body class="bg-gray-50 min-h-screen">
+  <header class="gradient-bg text-white py-8 shadow-lg">
+    <div class="container mx-auto px-4">
+      <h1 class="text-3xl md:text-4xl font-bold mb-1">🧠 Neuroscience Database</h1>
+      <p class="text-purple-100">Search Neuroscience terms and studies</p>
+    </div>
+  </header>
+
+  <main class="container mx-auto px-4 py-8 max-w-6xl">
+    <section class="bg-white rounded-lg shadow-md p-6 mb-6">
+      <div class="flex flex-wrap gap-2 mb-6">
+        <button id="btn-terms" onclick="setMode('terms')" class="px-6 py-2 rounded-lg font-semibold bg-purple-600 text-white">All Terms</button>
+        <button id="btn-term" onclick="setMode('term')" class="px-6 py-2 rounded-lg font-semibold bg-gray-200 text-gray-700">Term Lookup</button>
+        <button id="btn-query" onclick="setMode('query')" class="px-6 py-2 rounded-lg font-semibold bg-gray-200 text-gray-700">Logical Search</button>
+      </div>
+
+      <div id="input-area" class="space-y-4">
+        <!-- term lookup -->
+        <div id="term-input" class="hidden">
+          <label class="block text-sm font-medium text-gray-700 mb-2">Enter a term (Example: amygdala)</label>
+          <div class="flex gap-2">
+            <input id="term-value" type="text" placeholder="amygdala" class="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none">
+            <button onclick="searchTerm()" class="px-8 py-3 bg-purple-600 text-white rounded-lg font-semibold hover:bg-purple-700">Search</button>
+          </div>
+          <ul id="term-suggestions" class="mt-2 bg-white border border-gray-200 rounded-lg max-h-48 overflow-auto hidden shadow-lg"></ul>
+        </div>
+
+        <!-- logical query -->
+        <div id="query-input" class="hidden">
+          <label class="block text-sm font-medium text-gray-700 mb-2">Logical query（and, or, not）</label>
+          <div class="flex gap-2 mb-3">
+            <button type="button" onclick="insertOperator('and')" class="px-3 py-1 rounded-md bg-purple-50 text-purple-700 border border-purple-200">and</button>
+            <button type="button" onclick="insertOperator('or')" class="px-3 py-1 rounded-md bg-purple-50 text-purple-700 border border-purple-200">or</button>
+            <button type="button" onclick="insertOperator('not')" class="px-3 py-1 rounded-md bg-purple-50 text-purple-700 border border-purple-200">not</button>
+          </div>
+          <div class="flex gap-2">
+            <input id="query-value" type="text" placeholder="amygdala not emotion" class="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none">
+            <button onclick="searchQuery()" class="px-8 py-3 bg-purple-600 text-white rounded-lg font-semibold hover:bg-purple-700">Search</button>
+          </div>
+          <p class="text-sm text-gray-500 mt-2">💡 Example: "emotion and memory", "amygdala not emotion", "visual or auditory"</p>
+        </div>
+      </div>
+    </section>
+
+    <div id="loading" class="hidden text-center py-8">
+      <div class="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600"></div>
+      <p class="text-gray-600 mt-4">Loading...</p>
+    </div>
+
+    <section id="results" class="space-y-4"></section>
+  </main>
+
+  <footer class="py-8 text-center text-sm text-gray-500">NTU Neuroscience Database Search</footer>
 
   <script>
-    async function fetchTerms() {
-      const out = document.getElementById('out');
-      out.textContent = 'Requesting…';
+  // --------- Config ----------
+  const API_BASE = 'https://mil.psy.ntu.edu.tw:5000';
+  let currentMode = 'terms';
+  let allTermsCache = null;
+  let suggestionDebounce = null;
+  const SUGGEST_DEBOUNCE_MS = 180;
+
+  // --------- Helpers ----------
+  function showLoading(show) {
+    document.getElementById('loading').classList.toggle('hidden', !show);
+  }
+
+  function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function escapeJsString(s) {
+    return String(s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"');
+  }
+
+  function showError(err) {
+    const results = document.getElementById('results');
+    results.innerHTML = `
+      <div class="bg-red-50 border border-red-200 rounded-lg p-6 fade-in">
+        <h3 class="text-lg font-bold text-red-800 mb-2">❌ 發生錯誤</h3>
+        <p class="text-red-700">${escapeHtml(err && err.message ? err.message : String(err))}</p>
+        <p class="text-sm text-red-600 mt-4">常見原因：CORS、伺服器無回應或網路問題。</p>
+      </div>
+    `;
+  }
+
+  // Robust normalizer for "term" items (avoid undefined)
+  function pickTermValue(item) {
+    if (!item) return '';
+    if (typeof item === 'string') return item;
+    // prefer 'terms' field (plural), then other candidates
+    const candidates = ['terms', 'term', 'name', 'label', 'text'];
+    for (const k of candidates) {
+      if (item[k]) return item[k];
+    }
+    // if it's an array-like [term, count]
+    if (Array.isArray(item) && item.length > 0) return item[0];
+    // if object has numeric keys -> join?
+    if (Object.keys(item).length === 1 && typeof Object.values(item)[0] === 'number') {
+      // { "amygdala": 123 }
+      return Object.keys(item)[0];
+    }
+    // fallback to JSON snippet
+    return JSON.stringify(item);
+  }
+
+  // Normalize studies response into array of plain objects
+  function normalizeStudiesResponse(resp) {
+    if (!resp) return [];
+    if (Array.isArray(resp)) return resp;
+    // common wrappers
+    if (Array.isArray(resp.studies)) return resp.studies;
+    if (Array.isArray(resp.results)) return resp.results;
+    if (Array.isArray(resp.data)) return resp.data;
+    // sometimes server returns { items: {...} } or object mapping term->count
+    // try to detect numeric-valued object (term->count) -> convert into array of { term, co_count }
+    const numericEntries = [];
+    if (typeof resp === 'object') {
+      for (const [k,v] of Object.entries(resp)) {
+        if (typeof v === 'number') numericEntries.push({ term: k, co_count: v });
+      }
+      if (numericEntries.length) return numericEntries;
+    }
+    // fallback: single object -> return as single-item array
+    return [resp];
+  }
+
+  // Normalize "terms list" to array
+  function normalizeTermsResponse(data) {
+    if (!data) return [];
+    if (Array.isArray(data)) return data;
+    if (Array.isArray(data.terms)) return data.terms;
+    if (Array.isArray(data.results)) return data.results;
+    // if object with numeric values -> return keys
+    if (typeof data === 'object') {
+      const keysNumeric = [];
+      for (const [k,v] of Object.entries(data)) {
+        if (typeof v === 'number') keysNumeric.push(k);
+      }
+      if (keysNumeric.length) return keysNumeric;
+    }
+    return [];
+  }
+
+  // --------- UI Mode ----------
+  function setMode(mode) {
+    currentMode = mode;
+    ['terms','term','query'].forEach(m => {
+      const btn = document.getElementById(`btn-${m}`);
+      if (!btn) return;
+      btn.className = (m === mode)
+        ? 'px-6 py-2 rounded-lg font-semibold bg-purple-600 text-white'
+        : 'px-6 py-2 rounded-lg font-semibold bg-gray-200 text-gray-700';
+    });
+    document.getElementById('term-input').classList.toggle('hidden', mode !== 'term');
+    document.getElementById('query-input').classList.toggle('hidden', mode !== 'query');
+    document.getElementById('results').innerHTML = '';
+    if (mode === 'terms') fetchAllTerms();
+  }
+
+  // --------- All terms ----------
+  async function fetchAllTerms() {
+    showLoading(true);
+    try {
+      const resp = await fetch(`${API_BASE}/terms`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+      const json = await resp.json();
+      allTermsCache = normalizeTermsResponse(json);
+      displayTermsList(allTermsCache);
+    } catch (err) {
+      showError(err);
+    } finally {
+      showLoading(false);
+    }
+  }
+
+  function displayTermsList(data) {
+    const results = document.getElementById('results');
+    if (!data || data.length === 0) {
+      results.innerHTML = '<div class="bg-yellow-50 border border-yellow-200 rounded-lg p-6 text-center fade-in">No terms found</div>';
+      return;
+    }
+    results.innerHTML = `
+      <div class="bg-white rounded-lg shadow-md p-6 fade-in">
+        <h2 class="text-2xl font-bold text-gray-800 mb-4">📚 All Terms (${data.length})</h2>
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+          ${data.map(term => `
+            <button onclick="quickSearchTerm('${escapeJsString(pickTermValue(term))}')" 
+              class="px-4 py-2 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg transition-colors text-left font-medium">
+              ${escapeHtml(pickTermValue(term))}
+            </button>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  // --------- Term lookup ----------
+  async function searchTerm() {
+    const term = document.getElementById('term-value').value.trim();
+    if (!term) { alert('Please enter a term'); return; }
+    showLoading(true);
+    try {
+      const resp = await fetch(`${API_BASE}/terms/${encodeURIComponent(term)}`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+      const json = await resp.json();
+      // extract related terms robustly
+      const related = Array.isArray(json.related) ? json.related : (Array.isArray(json.results) ? json.results : []);
+      const rows = related.map(r => {
+        return {
+          term: pickTermValue(r),
+          co_count: (r && (r.co_count ?? r.count ?? r.co)) !== undefined ? (r.co_count ?? r.count ?? r.co) : ''
+        };
+      });
+      displayTermDetails(rows, term, json);
+    } catch (err) {
+      showError(err);
+    } finally {
+      showLoading(false);
+    }
+  }
+
+  function displayTermDetails(rows, term, raw) {
+    const results = document.getElementById('results');
+    results.innerHTML = `
+      <div class="bg-white rounded-lg shadow-md p-6 fade-in">
+        <div class="flex justify-between items-start mb-4">
+          <h2 class="text-2xl font-bold text-gray-800">🔍 Results for "${escapeHtml(term)}"</h2>
+          <span class="text-sm text-gray-500">${rows.length} items</span>
+        </div>
+        ${renderTermTable(rows)}
+        <details class="mt-4">
+          <summary class="text-sm text-purple-600 cursor-pointer hover:text-purple-700">View raw JSON</summary>
+          <pre class="mt-2 bg-gray-50 p-4 rounded-lg overflow-auto text-xs">${escapeHtml(JSON.stringify(raw || rows, null, 2))}</pre>
+        </details>
+      </div>
+    `;
+  }
+
+  function renderTermTable(items) {
+    if (!items || items.length === 0) {
+      return '<div class="text-gray-500 text-center py-4">No results found</div>';
+    }
+    return `
+      <div class="polished-table overflow-x-auto rounded-lg border border-gray-200">
+        <table class="min-w-full divide-y divide-gray-200">
+          <thead>
+            <tr>
+              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Term</th>
+              <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Co-occurrence</th>
+            </tr>
+          </thead>
+          <tbody class="bg-white divide-y divide-gray-200">
+            ${items.map(item => `
+              <tr class="hover:bg-purple-50 transition-colors">
+                <td class="px-6 py-4">
+                  <button onclick="quickSearchTerm('${escapeJsString(item.term || item.terms)}')" 
+                    class="text-purple-700 hover:text-purple-900 font-medium">${escapeHtml(item.term || item.terms || '')}</button>
+                </td>
+                <td class="px-6 py-4 text-right text-sm text-gray-600">${escapeHtml(String(item.co_count ?? ''))}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function quickSearchTerm(term) {
+    setMode('term');
+    document.getElementById('term-value').value = term;
+    searchTerm();
+  }
+
+  // --------- Logical query ----------
+  // try different variants to increase success chance
+  async function searchQuery() {
+    const rawQuery = document.getElementById('query-value').value.trim();
+    if (!rawQuery) { alert('請輸入查詢'); return; }
+    showLoading(true);
+    try {
+      const variants = [
+        rawQuery,
+        rawQuery.replace(/\b(and|or|not)\b/gi, m => m.toUpperCase()),
+        rawQuery.replace(/\s+/g, '+'),
+        rawQuery.replace(/\b(and|or|not)\b/gi, m => m.toUpperCase()).replace(/\s+/g, '+')
+      ];
+      const { data, used } = await attemptQueryVariants(variants);
+      const studies = normalizeStudiesResponse(data);
+      displayStudies(studies, rawQuery, data, used);
+    } catch (err) {
+      showError(err);
+    } finally {
+      showLoading(false);
+    }
+  }
+
+  async function attemptQueryVariants(variants) {
+    let lastErr = null;
+    for (const v of variants) {
       try {
-        const resp = await fetch('https://mil.psy.ntu.edu.tw:5000/terms');
-        let info = `HTTP ${resp.status} ${resp.statusText}\n`;
-        const ct = resp.headers.get('content-type') || '';
-
+        const resp = await fetch(`${API_BASE}/query/${encodeURIComponent(v)}/studies`);
         if (!resp.ok) {
-          const text = await resp.text();
-          out.textContent = info + '\n' + text;
-          return;
+          lastErr = new Error(`HTTP ${resp.status} ${resp.statusText} for variant "${v}"`);
+          continue;
         }
-
-        if (ct.includes('application/json')) {
-          const data = await resp.json();
-          out.textContent = info + '\n' + JSON.stringify(data, null, 2);
-        } else {
-          const text = await resp.text();
-          out.textContent = info + '\n' + text;
-        }
-      } catch (err) {
-        document.getElementById('out').textContent =
-          'Error: ' + (err && err.message ? err.message : String(err)) +
-          '\n\nCommon causes:\n1) CORS not allowed by the server\n2) Opening this file via file:// instead of a local server\n3) Network/server issues';
+        const json = await resp.json();
+        return { data: json, used: v };
+      } catch (e) {
+        lastErr = e;
       }
     }
+    // If none succeeded, try fallback endpoint without /studies
+    for (const v of variants) {
+      try {
+        const resp = await fetch(`${API_BASE}/query/${encodeURIComponent(v)}`);
+        if (!resp.ok) {
+          lastErr = new Error(`HTTP ${resp.status} ${resp.statusText} for variant "${v}" (fallback)`); continue;
+        }
+        const json = await resp.json();
+        return { data: json, used: v };
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw lastErr || new Error('所有查詢變體皆失敗');
+  }
 
-    document.getElementById('btn').addEventListener('click', fetchTerms);
-    fetchTerms();
+  function displayStudies(studies, rawQuery, raw, usedVariant) {
+    const results = document.getElementById('results');
+    const count = Array.isArray(studies) ? studies.length : 0;
+    results.innerHTML = `
+      <div class="bg-white rounded-lg shadow-md p-6 fade-in mb-4">
+        <div class="flex justify-between items-start mb-4">
+          <h2 class="text-2xl font-bold text-gray-800">📊 Results for "${escapeHtml(rawQuery)}"</h2>
+          <div class="text-right">
+            <div class="text-sm text-gray-500">${count} studies found</div>
+            ${usedVariant ? `<div class="text-xs text-gray-400">variant: ${escapeHtml(usedVariant)}</div>` : ''}
+          </div>
+        </div>
+
+        <div id="studies-list" class="space-y-4"></div>
+
+        <details class="mt-4">
+          <summary class="text-sm text-purple-600 cursor-pointer hover:text-purple-700">View raw JSON</summary>
+          <pre class="mt-2 bg-gray-50 p-4 rounded-lg overflow-auto text-xs">${escapeHtml(JSON.stringify(raw || studies, null, 2))}</pre>
+        </details>
+      </div>
+    `;
+    const list = document.getElementById('studies-list');
+    if (!studies || studies.length === 0) {
+      list.innerHTML = `<div class="text-gray-500 text-center py-6">找不到符合的 studies</div>`;
+      return;
+    }
+
+    // For display niceness: prefer ordering common keys first
+    const preferredKeys = ['id','study_id','title','authors','author','year','journal','abstract','keywords','term','terms','co_count'];
+
+    studies.forEach((s, idx) => {
+      const obj = (typeof s === 'object' && !Array.isArray(s)) ? s : { value: s };
+      // build ordered rows
+      const keysSeen = new Set();
+      const rows = [];
+      for (const k of preferredKeys) {
+        if (obj.hasOwnProperty(k)) { rows.push([k, obj[k]]); keysSeen.add(k); }
+      }
+      for (const k of Object.keys(obj)) {
+        if (!keysSeen.has(k)) rows.push([k, obj[k]]);
+      }
+      // render one card per study
+      list.innerHTML += `
+        <div class="bg-white border border-gray-100 rounded-lg p-4 shadow-sm fade-in">
+          <div class="flex justify-between items-start mb-2">
+            <div class="font-semibold text-gray-800">Study #${idx+1} ${obj.title ? '— ' + escapeHtml(String(obj.title)) : ''}</div>
+            <div class="text-sm text-gray-500">${obj.year ?? ''}</div>
+          </div>
+          <table class="w-full text-sm">
+            <tbody>
+              ${rows.map(([k,v]) => `
+                <tr class="border-t">
+                  <td class="py-2 px-3 align-top w-36 bg-gray-50 font-medium text-purple-700">${escapeHtml(k)}</td>
+                  <td class="py-2 px-3">${escapeHtml(typeof v === 'object' ? JSON.stringify(v) : String(v))}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    });
+  }
+
+  function insertOperator(op) {
+    const input = document.getElementById('query-value');
+    if (!input) return;
+    const start = input.selectionStart || 0;
+    const end = input.selectionEnd || 0;
+    const insert = ` ${op} `;
+    const v = input.value;
+    input.value = v.slice(0, start) + insert + v.slice(end);
+    const pos = start + insert.length;
+    input.setSelectionRange(pos, pos);
+    input.focus();
+  }
+
+  // ---------- Suggestions for term input ----------
+  function handleSuggestions(q) {
+    const ul = document.getElementById('term-suggestions');
+    if (!q) { ul.classList.add('hidden'); ul.innerHTML = ''; return; }
+    const showMatches = (terms) => {
+      if (!terms || terms.length === 0) { ul.classList.add('hidden'); ul.innerHTML = ''; return; }
+      const matches = terms.filter(t => {
+        const label = pickTermValue(t).toLowerCase();
+        return label.includes(q);
+      }).slice(0, 30);
+      if (matches.length === 0) { ul.classList.add('hidden'); ul.innerHTML = ''; return; }
+      ul.innerHTML = matches.map(m => {
+        const label = pickTermValue(m);
+        return `<li class="px-4 py-2 hover:bg-purple-50 cursor-pointer flex justify-between items-center" data-value="${escapeHtml(label)}">${escapeHtml(label)}</li>`;
+      }).join('');
+      ul.querySelectorAll('li').forEach(li => {
+        li.addEventListener('click', () => {
+          const v = li.getAttribute('data-value');
+          document.getElementById('term-value').value = v;
+          ul.classList.add('hidden');
+          searchTerm();
+        });
+      });
+      ul.classList.remove('hidden');
+    };
+
+    if (allTermsCache) return showMatches(allTermsCache);
+    // otherwise fetch
+    fetch(`${API_BASE}/terms`).then(r => r.json()).then(d => {
+      allTermsCache = normalizeTermsResponse(d);
+      showMatches(allTermsCache || []);
+    }).catch(() => {
+      ul.classList.add('hidden'); ul.innerHTML = '';
+    });
+  }
+
+  // ---------- Init & event listeners ----------
+  document.addEventListener('DOMContentLoaded', () => {
+    // enter key behavior
+    document.getElementById('term-value').addEventListener('keypress', e => { if (e.key === 'Enter') searchTerm(); });
+    document.getElementById('query-value').addEventListener('keypress', e => { if (e.key === 'Enter') searchQuery(); });
+
+    document.getElementById('term-value').addEventListener('input', (e) => {
+      const q = e.target.value.trim().toLowerCase();
+      clearTimeout(suggestionDebounce);
+      suggestionDebounce = setTimeout(() => handleSuggestions(q), SUGGEST_DEBOUNCE_MS);
+    });
+
+    // default to terms
+    setMode('terms');
+  });
   </script>
 </body>
 </html>
-
